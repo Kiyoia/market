@@ -13,6 +13,9 @@ jobs:
   build-release:
     name: build-release
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
 
     steps:
       - name: 检出代码
@@ -25,7 +28,11 @@ jobs:
           cache: pip
 
       - name: 安装构建依赖
+        shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
+          python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
@@ -33,15 +40,20 @@ jobs:
         id: version
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
           $time = Get-Date -Format "yyyy.MM.dd-HHmmss"
           $sha = "${{ github.sha }}".Substring(0, 7)
           $version = "v$time-$sha"
           "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: 运行最小校验
+        shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
           python main.py --help
-          python -c "import config, db, api; print('核心模块导入成功')"
+          python -c "import config, db, api; print('core import ok')"
 
       - name: PyInstaller 打包
         run: pyinstaller --noconfirm --clean --onefile --name market main.py
@@ -49,6 +61,8 @@ jobs:
       - name: 整理发布文件
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
           New-Item -ItemType Directory -Force release | Out-Null
           Copy-Item dist\market.exe release\market.exe
           Copy-Item config.example.yaml release\config.example.yaml
@@ -65,6 +79,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+          $OutputEncoding = [System.Text.UTF8Encoding]::new()
           @"
           高频电商价格指数计算平台发版
 
