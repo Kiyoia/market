@@ -11,7 +11,7 @@ import logging
 import base64
 from io import BytesIO
 
-from config import DATA_DIR
+from config import settings
 from db import (
     get_client,
     get_categories,
@@ -24,10 +24,7 @@ from db import (
 from data_cleaner import DataCleaner
 from data_loader import DataLoader
 from pipeline import run_index_pipeline
-from config import ANOMALY_PARAMS
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -117,7 +114,7 @@ async def load_data(request: LoadDataRequest):
     logger.info(f"收到加载数据请求: {request}")
 
     try:
-        data_dir = request.data_dir or DATA_DIR
+        data_dir = request.data_dir or settings.data_dir
         loader = DataLoader(data_dir, force_reload=request.force_reload)
 
         categories_df, products_df, daily_df = loader.load_all()
@@ -152,7 +149,7 @@ async def clean_data(request: CleanDataRequest):
     logger.info(f"收到清洗数据请求: {request}")
 
     try:
-        cleaner = DataCleaner(ANOMALY_PARAMS)
+        cleaner = DataCleaner(settings.anomaly_params)
         category_daily = cleaner.compute_category_daily(
             start_date=request.start_date,
             end_date=request.end_date

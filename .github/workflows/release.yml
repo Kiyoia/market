@@ -1,0 +1,84 @@
+name: build-release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: build-release
+    runs-on: windows-latest
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v7
+
+      - name: 设置 Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装构建依赖
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+
+      - name: 生成版本号
+        id: version
+        shell: pwsh
+        run: |
+          $time = Get-Date -Format "yyyy.MM.dd-HHmmss"
+          $sha = "${{ github.sha }}".Substring(0, 7)
+          $version = "v$time-$sha"
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: 运行最小校验
+        run: |
+          python main.py --help
+          python -c "import config, db, api; print('核心模块导入成功')"
+
+      - name: PyInstaller 打包
+        run: pyinstaller --noconfirm --clean --onefile --name market main.py
+
+      - name: 整理发布文件
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist\market.exe release\market.exe
+          Copy-Item config.example.yaml release\config.example.yaml
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: market-windows-${{ steps.version.outputs.version }}
+          path: release/
+
+      - name: 创建 Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          @"
+          高频电商价格指数计算平台发版
+
+          版本：$env:VERSION
+          提交：${{ github.sha }}
+
+          使用方式：
+          1. 将 config.example.yaml 复制为 config.yaml。
+          2. 填写 ClickHouse 连接信息。
+          3. 运行 market.exe 执行指数计算。
+          4. 运行 market.exe -server 启动 API 服务。
+
+          "@ | Set-Content -Encoding UTF8 release-notes.md
+
+          gh release create $env:VERSION release\market.exe release\config.example.yaml `
+            --title "发版 $env:VERSION" `
+            --notes-file release-notes.md

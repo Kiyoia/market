@@ -80,7 +80,7 @@ class DataCleaner:
     def _execute_clean_sql(self, start_date, end_date):
         """执行清洗SQL（使用 toDate() 包裹日期字符串避免类型转换错误）"""
         p = self.params
-        w = p['historical_window']
+        w = p.historical_window
 
         sql = f"""
         WITH base_data AS (
@@ -113,16 +113,16 @@ class DataCleaner:
                 date, product_id, category_id, name, price, weight,
                 category_avg, category_std, cat_count, historical_avg,
                 CASE
-                    WHEN cat_count >= {p['min_category_count']}
+                    WHEN cat_count >= {p.min_category_count}
                         AND category_std IS NOT NULL
                         AND category_std > 0
-                        AND ABS(price - category_avg) > {p['std_threshold']} * category_std
+                        AND ABS(price - category_avg) > {p.std_threshold} * category_std
                         THEN 1
-                    WHEN cat_count >= {p['min_category_count']}
+                    WHEN cat_count >= {p.min_category_count}
                         AND category_avg IS NOT NULL
                         AND category_avg > 0
-                        AND (price > category_avg * {p['price_high_ratio']}
-                             OR price < category_avg * {p['price_low_ratio']})
+                        AND (price > category_avg * {p.price_high_ratio}
+                             OR price < category_avg * {p.price_low_ratio})
                         THEN 1
                     WHEN historical_avg IS NOT NULL
                         AND historical_avg > 0
@@ -132,7 +132,7 @@ class DataCleaner:
                     ELSE 0
                 END AS is_anomaly
             FROM base_data
-            WHERE cat_count >= {p['min_category_count']}
+            WHERE cat_count >= {p.min_category_count}
         ),
         deduped AS (
             SELECT
@@ -166,7 +166,7 @@ class DataCleaner:
     def _execute_category_daily_sql(self, start_date, end_date):
         """执行低内存清洗聚合 SQL"""
         p = self.params
-        w = p['historical_window']
+        w = p.historical_window
 
         sql = f"""
         WITH base_data AS (
@@ -197,16 +197,16 @@ class DataCleaner:
                 date, product_id, category_id, name, price, weight,
                 category_avg, category_std, cat_count, historical_avg,
                 CASE
-                    WHEN cat_count >= {p['min_category_count']}
+                    WHEN cat_count >= {p.min_category_count}
                         AND category_std IS NOT NULL
                         AND category_std > 0
-                        AND ABS(price - category_avg) > {p['std_threshold']} * category_std
+                        AND ABS(price - category_avg) > {p.std_threshold} * category_std
                         THEN 1
-                    WHEN cat_count >= {p['min_category_count']}
+                    WHEN cat_count >= {p.min_category_count}
                         AND category_avg IS NOT NULL
                         AND category_avg > 0
-                        AND (price > category_avg * {p['price_high_ratio']}
-                             OR price < category_avg * {p['price_low_ratio']})
+                        AND (price > category_avg * {p.price_high_ratio}
+                             OR price < category_avg * {p.price_low_ratio})
                         THEN 1
                     WHEN historical_avg IS NOT NULL
                         AND historical_avg > 0
@@ -216,7 +216,7 @@ class DataCleaner:
                     ELSE 0
                 END AS is_anomaly
             FROM base_data
-            WHERE cat_count >= {p['min_category_count']}
+            WHERE cat_count >= {p.min_category_count}
         ),
         deduped AS (
             SELECT

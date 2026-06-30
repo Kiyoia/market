@@ -1,0 +1,9 @@
+PyYAML
+fastapi
+uvicorn
+pandas
+numpy
+matplotlib
+clickhouse-driver
+pydantic
+openpyxl

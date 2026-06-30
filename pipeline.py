@@ -8,7 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 
-from config import ANOMALY_PARAMS, BASE_DATE, DATA_DIR
+from config import settings
 from data_cleaner import DataCleaner
 from db import TABLE_PRICE_INDEX_RESULTS, execute, insert_df
 from index_calculator import IndexCalculator
@@ -83,8 +83,8 @@ def write_results(result_df, output_path):
 def run_index_pipeline(save_chart=True):
     """运行完整价格指数计算流水线"""
     started_at = time.perf_counter()
-    cleaner = DataCleaner(ANOMALY_PARAMS)
-    calculator = IndexCalculator(BASE_DATE)
+    cleaner = DataCleaner(settings.anomaly_params)
+    calculator = IndexCalculator(settings.base_date)
 
     category_daily = cleaner.compute_category_daily()
     if category_daily.empty:
@@ -98,14 +98,14 @@ def run_index_pipeline(save_chart=True):
     result_df = prepare_result_df(index_df, aggregated_df)
     logger.info(f"结果生成完成: {len(result_df)} 条")
 
-    output_path = os.path.join(DATA_DIR, 'price_index_results.csv')
+    output_path = os.path.join(settings.data_dir, 'price_index_results.csv')
     write_results(result_df, output_path)
 
     if save_chart:
         Visualizer().plot_price_index(
             result_df,
-            title=f"高频电商价格指数趋势图 (基期: {BASE_DATE})",
-            save_path=os.path.join(DATA_DIR, 'price_index_trend.png'),
+            title=f"高频电商价格指数趋势图 (基期: {settings.base_date})",
+            save_path=os.path.join(settings.data_dir, 'price_index_trend.png'),
             show=False
         )
 

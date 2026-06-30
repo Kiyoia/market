@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 from clickhouse_driver import Client
 
-from config import CLICKHOUSE_CONFIG
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +20,13 @@ def get_client():
     """获取 ClickHouse 客户端单例"""
     global _client
     if _client is None:
+        settings.clickhouse.validate()
         _client = Client(
-            host=CLICKHOUSE_CONFIG['host'],
-            port=CLICKHOUSE_CONFIG['port'],
-            database=CLICKHOUSE_CONFIG['database'],
-            user=CLICKHOUSE_CONFIG['user'],
-            password=CLICKHOUSE_CONFIG['password'],
+            host=settings.clickhouse.host,
+            port=settings.clickhouse.port,
+            database=settings.clickhouse.database,
+            user=settings.clickhouse.user,
+            password=settings.clickhouse.password,
             settings={
                 'use_numpy': True,
                 'strings_encoding': 'gb18030',
