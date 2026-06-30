@@ -3,11 +3,11 @@
 
 # 数据库配置
 CLICKHOUSE_CONFIG = {
-    'host': 'localhost',
+    'host': 'cc-bp1n5v8x78h066754-ck-l3.clickhouseserver.rds.aliyuncs.com',
     'port': 9000,
-    'database': 'price_index',
-    'user': 'default',
-    'password': ''
+    'database': 'default',
+    'user': 'user1',
+    'password': 'zH*$FRoEvGT$Vn36'
 }
 
 # 数据目录

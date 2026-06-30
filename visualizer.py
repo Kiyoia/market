@@ -1,12 +1,13 @@
 # visualizer.py
-"""可视化模块 - 生成指数趋势图"""
+"""可视化模块 — 生成指数趋势图"""
 
 import pandas as pd
 import matplotlib.pyplot as plt
 import logging
-from clickhouse_driver import Client
 
 logger = logging.getLogger(__name__)
+
+from db import get_top_categories
 
 # 设置中文字体
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'DejaVu Sans']
@@ -14,12 +15,9 @@ plt.rcParams['axes.unicode_minus'] = False
 
 
 class Visualizer:
-    """可视化工具"""
+    """可视化工具（不再持有 client，仅操作 DataFrame）"""
 
-    def __init__(self, client):
-        self.client = client
-
-    def plot_price_index(self, index_df, title="高频电商价格指数趋势图", save_path=None):
+    def plot_price_index(self, index_df, title="高频电商价格指数趋势图", save_path=None, show=True):
         """
         生成价格指数趋势图
         """
@@ -50,7 +48,10 @@ class Visualizer:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
             logger.info(f"图表已保存: {save_path}")
 
-        plt.show()
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
         logger.info("图表生成完成")
 
     def _plot_global_trend(self, ax, index_df):
@@ -74,11 +75,7 @@ class Visualizer:
 
     def _plot_category_trends(self, ax, index_df):
         """分类指数趋势"""
-        # 获取权重最大的5个分类
-        categories = self.client.query_dataframe(
-            "SELECT category_name, weight FROM categories WHERE hierarchy = 2 ORDER BY weight DESC LIMIT 5"
-        )
-        top_categories = categories['category_name'].tolist()
+        top_categories = get_top_categories(5)
 
         pivot_df = index_df.pivot_table(
             index='date', columns='category_name', values='index_value'
@@ -143,7 +140,9 @@ class Visualizer:
 
                 step = max(1, len(pivot_heat.index) // 8)
                 ax.set_xticks(range(0, len(pivot_heat.index), step))
-                ax.set_xticklabels([d.strftime('%m-%d') for d in pivot_heat.index[::step]], fontsize=8)
+                ax.set_xticklabels(
+                    [d.strftime('%m-%d') for d in pivot_heat.index[::step]], fontsize=8
+                )
                 ax.set_yticks(range(len(pivot_heat.columns)))
                 ax.set_yticklabels(pivot_heat.columns, fontsize=7)
                 plt.colorbar(im, ax=ax, label='指数值')

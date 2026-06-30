@@ -1,5 +1,5 @@
 # index_calculator.py
-"""指数计算模块 - 链式价格指数"""
+"""指数计算模块 — 链式价格指数（费雪理想指数）"""
 
 import pandas as pd
 import numpy as np
@@ -7,12 +7,13 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from db import get_categories
+
 
 class IndexCalculator:
     """指数计算器"""
 
-    def __init__(self, client, base_date):
-        self.client = client
+    def __init__(self, base_date):
         self.base_date = pd.to_datetime(base_date)
 
     def compute_weighted_avg_price(self, cleaned_df):
@@ -24,29 +25,56 @@ class IndexCalculator:
         if cleaned_df.empty:
             return pd.DataFrame()
 
-        # 如果没有销量，使用权重替代
-        if 'sales_qty' not in cleaned_df.columns:
-            cleaned_df['sales_qty'] = cleaned_df['weight'] * 1000
-            cleaned_df['sales_amount'] = cleaned_df['price'] * cleaned_df['sales_qty']
+        df = cleaned_df.copy()
+        df['category_id'] = df['category_id'].astype(str).str.strip()
 
-        cleaned_df['weighted_price'] = cleaned_df['price'] * cleaned_df['sales_qty']
+        # 如果没有销量，使用权重替代
+        if 'sales_qty' not in df.columns:
+            df['sales_qty'] = df['weight'] * 1000
+            df['sales_amount'] = df['price'] * df['sales_qty']
+
+        df['weighted_price'] = df['price'] * df['sales_qty']
 
         # 按日期和分类分组
-        category_daily = cleaned_df.groupby(['date', 'category_id']).agg({
+        category_daily = df.groupby(['date', 'category_id']).agg({
             'weighted_price': 'sum',
             'sales_qty': 'sum',
             'price': 'mean'
         }).reset_index()
 
-        category_daily['weighted_avg_price'] = category_daily['weighted_price'] / category_daily['sales_qty'].clip(
-            lower=0.001)
-
-        # 获取分类名称
-        categories = self.client.query_dataframe(
-            "SELECT category_id, category_name, hierarchy, parent FROM categories"
+        category_daily['weighted_avg_price'] = (
+            category_daily['weighted_price'] / category_daily['sales_qty'].clip(lower=0.001)
         )
+
+        # 获取分类信息，并直接归并到二级分类
+        categories = get_categories()
         categories['category_id'] = categories['category_id'].astype(str).str.strip()
-        category_daily = category_daily.merge(categories, on='category_id', how='left')
+        categories['parent'] = categories['parent'].astype(str).str.strip()
+        category_daily = category_daily.merge(
+            categories[['category_id', 'category_name', 'hierarchy', 'parent']],
+            on='category_id',
+            how='left'
+        )
+        category_daily['category_id'] = category_daily.apply(
+            lambda row: row['parent'] if row['hierarchy'] == 3 else row['category_id'],
+            axis=1
+        )
+        category_daily = category_daily.groupby(['date', 'category_id']).agg({
+            'weighted_price': 'sum',
+            'sales_qty': 'sum',
+            'price': 'mean'
+        }).reset_index()
+        category_daily['weighted_avg_price'] = (
+            category_daily['weighted_price'] / category_daily['sales_qty'].clip(lower=0.001)
+        )
+        category_daily = category_daily.merge(
+            categories[['category_id', 'category_name']],
+            on='category_id',
+            how='left'
+        )
+        category_daily['category_name'] = category_daily['category_name'].fillna(
+            category_daily['category_id']
+        )
         category_daily = category_daily.sort_values(['date', 'category_id'])
 
         logger.info(f"计算完成: {len(category_daily)} 条")
@@ -149,30 +177,40 @@ class IndexCalculator:
             return pd.DataFrame()
 
         if level == 'global':
-            # 获取分类权重
-            categories = self.client.query_dataframe(
-                "SELECT category_id, weight FROM categories WHERE hierarchy = 2"
-            )
+            # 获取分类权重（仅 hierarchy=2）
+            categories = get_categories(hierarchy=2)
             categories['category_id'] = categories['category_id'].astype(str).str.strip()
 
-            global_index = index_df.merge(categories, on='category_id', how='left')
-            global_index['weighted_index'] = global_index['index_value'] * global_index['weight'].fillna(1)
+            global_index = index_df.merge(
+                categories[['category_id', 'weight']], on='category_id', how='left'
+            )
+            missing_count = int(global_index['weight'].isna().sum())
+            if missing_count:
+                logger.warning(f"跳过缺少二级分类权重的指数记录: {missing_count} 条")
+            global_index = global_index[global_index['weight'].notna()].copy()
+            if global_index.empty:
+                logger.warning("无可汇总的二级分类权重数据")
+                return pd.DataFrame()
+
+            global_index['weighted_index'] = (
+                global_index['index_value'] * global_index['weight']
+            )
 
             result = global_index.groupby('date').agg({
                 'weighted_index': 'sum',
                 'weight': 'sum'
             }).reset_index()
 
-            result['weight'] = result['weight'].replace(0, 1)
+            result = result[result['weight'] > 0].copy()
             result['global_index'] = result['weighted_index'] / result['weight']
             result = result[['date', 'global_index']]
 
         elif level == 'parent':
-            categories = self.client.query_dataframe(
-                "SELECT category_id, parent FROM categories WHERE hierarchy = 2"
-            )
+            categories = get_categories(hierarchy=2)
             categories['category_id'] = categories['category_id'].astype(str).str.strip()
-            parent_index = index_df.merge(categories, on='category_id', how='left')
+            parent_index = index_df.merge(
+                categories[['category_id', 'parent']], on='category_id', how='left'
+            )
             result = parent_index.groupby(['date', 'parent']).agg({
                 'index_value': 'mean'
             }).reset_index()

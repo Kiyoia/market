@@ -1,20 +1,30 @@
 # api.py
-"""API接口模块 - 提供RESTful API"""
+"""API接口模块 — 提供RESTful API"""
 
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
-from typing import Optional, List
-from datetime import datetime, date
+from typing import Optional
+from datetime import datetime
 import pandas as pd
+import matplotlib.pyplot as plt
 import logging
-import os
-from glob import glob
+import base64
+from io import BytesIO
 
-from config import CLICKHOUSE_CONFIG, DATA_DIR, BASE_DATE, ANOMALY_PARAMS
-from data_loader import DataLoader
+from config import DATA_DIR
+from db import (
+    get_client,
+    get_categories,
+    get_date_range,
+    get_latest_price_index_summary,
+    get_table_stats,
+    query_price_index_results,
+    result_table_exists,
+)
 from data_cleaner import DataCleaner
-from index_calculator import IndexCalculator
-from visualizer import Visualizer
+from data_loader import DataLoader
+from pipeline import run_index_pipeline
+from config import ANOMALY_PARAMS
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -45,48 +55,22 @@ class CleanDataRequest(BaseModel):
     end_date: Optional[str] = Field(None, description="结束日期 YYYY-MM-DD")
 
 
-class IndexQueryRequest(BaseModel):
-    """指数查询请求"""
-    start_date: Optional[str] = Field(None, description="开始日期 YYYY-MM-DD")
-    end_date: Optional[str] = Field(None, description="结束日期 YYYY-MM-DD")
-    category_ids: Optional[List[str]] = Field(None, description="分类ID列表")
-    level: str = Field("global", description="聚合级别: global/category/sku")
-
-
-class IndexResponse(BaseModel):
-    """指数响应"""
-    date: str
-    category_id: Optional[str] = None
-    category_name: Optional[str] = None
-    index_value: float
-    global_index: Optional[float] = None
-
-
 # ==================== 工具函数 ====================
 
-def get_client():
-    """获取ClickHouse连接"""
-    from clickhouse_driver import Client
-    return Client(
-        host=CLICKHOUSE_CONFIG['host'],
-        port=CLICKHOUSE_CONFIG['port'],
-        database=CLICKHOUSE_CONFIG['database'],
-        user=CLICKHOUSE_CONFIG['user'],
-        password=CLICKHOUSE_CONFIG['password'],
-        settings={'use_numpy': True}
-    )
+def df_to_records(df):
+    """将 DataFrame 转成 JSON 友好的记录"""
+    if df.empty:
+        return []
 
-
-def get_calculator():
-    """获取计算器实例"""
-    client = get_client()
-    return {
-        'loader': DataLoader(client, DATA_DIR),
-        'cleaner': DataCleaner(client, ANOMALY_PARAMS),
-        'calculator': IndexCalculator(client, BASE_DATE),
-        'visualizer': Visualizer(client),
-        'client': client
-    }
+    result = df.copy()
+    for column in result.columns:
+        if column == 'created_at':
+            result[column] = pd.to_datetime(result[column]).dt.strftime('%Y-%m-%d %H:%M:%S')
+        elif pd.api.types.is_datetime64_any_dtype(result[column]):
+            result[column] = result[column].dt.strftime('%Y-%m-%d')
+        elif column == 'date':
+            result[column] = pd.to_datetime(result[column]).dt.strftime('%Y-%m-%d')
+    return result.to_dict('records')
 
 
 # ==================== API接口 ====================
@@ -133,13 +117,10 @@ async def load_data(request: LoadDataRequest):
     logger.info(f"收到加载数据请求: {request}")
 
     try:
-        tools = get_calculator()
+        data_dir = request.data_dir or DATA_DIR
+        loader = DataLoader(data_dir, force_reload=request.force_reload)
 
-        # 使用自定义数据目录
-        if request.data_dir:
-            tools['loader'].data_dir = request.data_dir
-
-        categories_df, products_df, daily_df = tools['loader'].load_all()
+        categories_df, products_df, daily_df = loader.load_all()
 
         return {
             "code": 0,
@@ -171,22 +152,22 @@ async def clean_data(request: CleanDataRequest):
     logger.info(f"收到清洗数据请求: {request}")
 
     try:
-        tools = get_calculator()
-        cleaned_df = tools['cleaner'].clean(
+        cleaner = DataCleaner(ANOMALY_PARAMS)
+        category_daily = cleaner.compute_category_daily(
             start_date=request.start_date,
             end_date=request.end_date
         )
 
         return {
             "code": 0,
-            "message": "数据清洗完成",
+            "message": "数据清洗聚合完成",
             "data": {
-                "total_records": len(cleaned_df),
+                "total_records": len(category_daily),
                 "date_range": {
-                    "start": cleaned_df['date'].min().strftime('%Y-%m-%d') if not cleaned_df.empty else None,
-                    "end": cleaned_df['date'].max().strftime('%Y-%m-%d') if not cleaned_df.empty else None
-                } if not cleaned_df.empty else None,
-                "sample": cleaned_df.head(10).to_dict('records') if not cleaned_df.empty else []
+                    "start": category_daily['date'].min().strftime('%Y-%m-%d') if not category_daily.empty else None,
+                    "end": category_daily['date'].max().strftime('%Y-%m-%d') if not category_daily.empty else None
+                } if not category_daily.empty else None,
+                "sample": df_to_records(category_daily.head(10)) if not category_daily.empty else []
             }
         }
     except Exception as e:
@@ -206,51 +187,7 @@ async def calculate_index(background_tasks: BackgroundTasks):
 
     def run_calculation():
         try:
-            tools = get_calculator()
-
-            # 1. 清洗数据
-            cleaned_df = tools['cleaner'].clean()
-
-            if cleaned_df.empty:
-                logger.warning("清洗后无数据")
-                return
-
-            # 2. 计算加权平均价格
-            category_daily = tools['calculator'].compute_weighted_avg_price(cleaned_df)
-
-            if category_daily.empty:
-                logger.warning("无分类日度数据")
-                return
-
-            # 3. 计算链式指数
-            index_df = tools['calculator'].compute_chain_price_index(category_daily)
-
-            if index_df.empty:
-                logger.warning("指数计算失败")
-                return
-
-            # 4. 汇总指数
-            aggregated_df = tools['calculator'].compute_aggregated_index(index_df, level='global')
-
-            # 5. 合并结果
-            if not aggregated_df.empty:
-                result_df = index_df.merge(aggregated_df, on='date', how='left')
-            else:
-                result_df = index_df
-
-            # 6. 保存结果
-            output_path = f'{DATA_DIR}/price_index_results.csv'
-            result_df.to_csv(output_path, index=False)
-            logger.info(f"结果已保存: {output_path}")
-
-            # 7. 生成图表
-            tools['visualizer'].plot_price_index(
-                result_df,
-                title=f"高频电商价格指数趋势图 (基期: {BASE_DATE})",
-                save_path=f'{DATA_DIR}/price_index_trend.png'
-            )
-
-            # 8. 缓存结果
+            result_df = run_index_pipeline(save_chart=True)
             global index_cache, cache_time
             index_cache = {
                 'result': result_df,
@@ -261,8 +198,7 @@ async def calculate_index(background_tasks: BackgroundTasks):
                         'start': result_df['date'].min().strftime('%Y-%m-%d'),
                         'end': result_df['date'].max().strftime('%Y-%m-%d')
                     },
-                    'latest_index': float(
-                        result_df['global_index'].iloc[-1]) if 'global_index' in result_df.columns else None
+                    'latest_index': float(result_df['global_index'].dropna().iloc[-1])
                 }
             }
             cache_time = datetime.now()
@@ -300,35 +236,15 @@ async def query_index(
     logger.info(f"收到查询指数请求: start={start_date}, end={end_date}, category={category_id}")
 
     try:
-        client = get_client()
+        if not result_table_exists():
+            raise HTTPException(status_code=404, detail="未找到指数结果表，请先计算")
 
-        # 构建SQL
-        sql = """
-        SELECT 
-            date,
-            category_id,
-            category_name,
-            index_value
-        FROM price_index_results
-        WHERE 1=1
-        """
-
-        params = []
-        if start_date:
-            sql += " AND date >= %(start_date)s"
-            params.append(('start_date', start_date))
-        if end_date:
-            sql += " AND date <= %(end_date)s"
-            params.append(('end_date', end_date))
-        if category_id:
-            sql += " AND category_id = %(category_id)s"
-            params.append(('category_id', category_id))
-
-        sql += " ORDER BY date DESC LIMIT %(limit)s"
-        params.append(('limit', limit))
-
-        # 执行查询
-        df = client.query_dataframe(sql)
+        df = query_price_index_results(
+            start_date=start_date,
+            end_date=end_date,
+            category_id=category_id,
+            limit=limit
+        )
 
         if df.empty:
             return {
@@ -339,10 +255,12 @@ async def query_index(
 
         return {
             "code": 0,
-            "data": df.to_dict('records'),
+            "data": df_to_records(df),
             "total": len(df)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"查询指数失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -365,28 +283,30 @@ async def get_latest_index():
                     "cached": True
                 }
 
-        # 从CSV读取
-        result_path = f'{DATA_DIR}/price_index_results.csv'
-        if os.path.exists(result_path):
-            df = pd.read_csv(result_path)
-            df['date'] = pd.to_datetime(df['date'])
-
-            latest = df.iloc[-1]
+        if not result_table_exists():
             return {
-                "code": 0,
-                "data": {
-                    "date": latest['date'].strftime('%Y-%m-%d'),
-                    "global_index": float(latest['global_index']) if 'global_index' in latest else None,
-                    "total_records": len(df),
-                    "categories": df['category_id'].nunique()
-                },
-                "cached": False
+                "code": 1,
+                "message": "暂无指数数据，请先计算",
+                "data": None
+            }
+
+        summary = get_latest_price_index_summary()
+        if summary.empty or pd.isna(summary['latest_date'].iloc[0]):
+            return {
+                "code": 1,
+                "message": "暂无指数数据，请先计算",
+                "data": None
             }
 
         return {
-            "code": 1,
-            "message": "暂无指数数据，请先计算",
-            "data": None
+            "code": 0,
+            "data": {
+                "date": summary['latest_date'].iloc[0].strftime('%Y-%m-%d'),
+                "global_index": float(summary['global_index'].iloc[0]),
+                "total_records": int(summary['total_records'].iloc[0]),
+                "categories": int(summary['categories'].iloc[0])
+            },
+            "cached": False
         }
 
     except Exception as e:
@@ -407,25 +327,18 @@ async def get_index_chart(
     logger.info("获取指数趋势图")
 
     try:
-        # 读取数据
-        result_path = f'{DATA_DIR}/price_index_results.csv'
-        if not os.path.exists(result_path):
-            raise HTTPException(status_code=404, detail="未找到指数数据，请先计算")
+        if not result_table_exists():
+            raise HTTPException(status_code=404, detail="未找到指数结果表，请先计算")
 
-        df = pd.read_csv(result_path)
+        df = query_price_index_results(
+            start_date=start_date,
+            end_date=end_date,
+            limit=100000
+        )
         df['date'] = pd.to_datetime(df['date'])
-
-        # 筛选日期
-        if start_date:
-            df = df[df['date'] >= pd.to_datetime(start_date)]
-        if end_date:
-            df = df[df['date'] <= pd.to_datetime(end_date)]
 
         if df.empty:
             raise HTTPException(status_code=404, detail="指定日期范围内无数据")
-
-        # 生成图表
-        tools = get_calculator()
 
         # 设置图表大小
         plt.rcParams['figure.figsize'] = (width / 100, height / 100)
@@ -441,10 +354,8 @@ async def get_index_chart(
             ax1.axhline(y=100, color='red', linestyle='--', alpha=0.5)
 
         # 分类指数（Top 5）
-        categories = tools['client'].query_dataframe(
-            "SELECT category_name FROM categories WHERE hierarchy = 2 ORDER BY weight DESC LIMIT 5"
-        )
-        top_categories = categories['category_name'].tolist()
+        from db import get_top_categories
+        top_categories = get_top_categories(5)
 
         pivot_df = df.pivot_table(index='date', columns='category_name', values='index_value')
         for cat in top_categories:
@@ -460,17 +371,11 @@ async def get_index_chart(
 
         plt.tight_layout()
 
-        # 保存临时图片
-        temp_path = f'{DATA_DIR}/temp_chart.png'
-        plt.savefig(temp_path, dpi=150, bbox_inches='tight')
+        buffer = BytesIO()
+        plt.savefig(buffer, format='png', dpi=150, bbox_inches='tight')
         plt.close()
-
-        # 读取图片返回
-        import base64
-        with open(temp_path, 'rb') as f:
-            image_data = base64.b64encode(f.read()).decode('utf-8')
-
-        os.remove(temp_path)
+        buffer.seek(0)
+        image_data = base64.b64encode(buffer.read()).decode('utf-8')
 
         return {
             "code": 0,
@@ -491,21 +396,18 @@ async def get_index_chart(
 
 
 @app.get("/api/categories")
-async def get_categories():
+async def api_get_categories():
     """
     获取分类列表
     """
     logger.info("获取分类列表")
 
     try:
-        client = get_client()
-        df = client.query_dataframe(
-            "SELECT category_id, category_name, hierarchy, weight, parent FROM categories ORDER BY hierarchy, category_id"
-        )
+        df = get_categories()
 
         return {
             "code": 0,
-            "data": df.to_dict('records'),
+            "data": df_to_records(df),
             "total": len(df)
         }
     except Exception as e:
@@ -521,35 +423,20 @@ async def get_stats():
     logger.info("获取系统统计信息")
 
     try:
-        client = get_client()
-
-        # 数据统计
-        daily_count = client.query_dataframe("SELECT COUNT(*) as count FROM daily_prices")
-        product_count = client.query_dataframe("SELECT COUNT(*) as count FROM products")
-        category_count = client.query_dataframe("SELECT COUNT(*) as count FROM categories")
-
-        # 日期范围
-        date_range = client.query_dataframe("""
-            SELECT MIN(date) as min_date, MAX(date) as max_date, COUNT(DISTINCT date) as days
-            FROM daily_prices
-        """)
+        stats = get_table_stats()
+        min_date, max_date = get_date_range()
 
         return {
             "code": 0,
             "data": {
-                "daily_prices": int(daily_count['count'].iloc[0]) if not daily_count.empty else 0,
-                "products": int(product_count['count'].iloc[0]) if not product_count.empty else 0,
-                "categories": int(category_count['count'].iloc[0]) if not category_count.empty else 0,
+                "daily_prices": stats['daily_prices'],
+                "products": stats['products'],
+                "categories": stats['categories'],
                 "date_range": {
-                    "start": date_range['min_date'].iloc[0].strftime('%Y-%m-%d') if not date_range.empty and
-                                                                                    date_range['min_date'].iloc[
-                                                                                        0] else None,
-                    "end": date_range['max_date'].iloc[0].strftime('%Y-%m-%d') if not date_range.empty and
-                                                                                  date_range['max_date'].iloc[
-                                                                                      0] else None,
-                    "days": int(date_range['days'].iloc[0]) if not date_range.empty else 0
+                    "start": min_date.strftime('%Y-%m-%d') if min_date else None,
+                    "end": max_date.strftime('%Y-%m-%d') if max_date else None,
                 },
-                "has_index": os.path.exists(f'{DATA_DIR}/price_index_results.csv')
+                "has_index": result_table_exists()
             }
         }
     except Exception as e:
@@ -565,29 +452,7 @@ async def refresh_index():
     logger.info("刷新指数数据")
 
     try:
-        tools = get_calculator()
-
-        # 重新计算
-        cleaned_df = tools['cleaner'].clean()
-        category_daily = tools['calculator'].compute_weighted_avg_price(cleaned_df)
-        index_df = tools['calculator'].compute_chain_price_index(category_daily)
-        aggregated_df = tools['calculator'].compute_aggregated_index(index_df, level='global')
-
-        if not aggregated_df.empty:
-            result_df = index_df.merge(aggregated_df, on='date', how='left')
-        else:
-            result_df = index_df
-
-        # 保存
-        output_path = f'{DATA_DIR}/price_index_results.csv'
-        result_df.to_csv(output_path, index=False)
-
-        # 生成图表
-        tools['visualizer'].plot_price_index(
-            result_df,
-            title=f"高频电商价格指数趋势图 (基期: {BASE_DATE})",
-            save_path=f'{DATA_DIR}/price_index_trend.png'
-        )
+        result_df = run_index_pipeline(save_chart=True)
 
         return {
             "code": 0,
