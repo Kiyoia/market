@@ -98,3 +98,7 @@ jobs:
           gh release create $env:VERSION release\market.exe release\config.example.yaml `
             --title "发版 $env:VERSION" `
             --notes-file release-notes.md
+
+          gh release create $env:VERSION release\market.exe release\config.example.yaml `
+            --title "发版 $env:VERSION" `
+            --notes-file release-notes.md
