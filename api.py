@@ -70,6 +70,18 @@ def df_to_records(df):
     return result.to_dict('records')
 
 
+def require_db_write_enabled():
+    """要求开启数据库写入开关"""
+    if not settings.safety.db_write_enabled:
+        raise HTTPException(status_code=403, detail="当前配置为只读模式，禁止执行写入操作")
+
+
+def require_schema_reset_enabled():
+    """要求开启重建表开关"""
+    if not settings.safety.schema_reset_enabled:
+        raise HTTPException(status_code=403, detail="当前配置禁止重建表，不能使用 force_reload=true")
+
+
 # ==================== API接口 ====================
 
 @app.get("/")
@@ -114,6 +126,10 @@ async def load_data(request: LoadDataRequest):
     logger.info(f"收到加载数据请求: {request}")
 
     try:
+        require_db_write_enabled()
+        if request.force_reload:
+            require_schema_reset_enabled()
+
         data_dir = request.data_dir or settings.data_dir
         loader = DataLoader(data_dir, force_reload=request.force_reload)
 
@@ -132,6 +148,8 @@ async def load_data(request: LoadDataRequest):
                 }
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"加载数据失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -181,6 +199,7 @@ async def calculate_index(background_tasks: BackgroundTasks):
     - 结果保存在数据库和CSV中
     """
     logger.info("收到计算指数请求")
+    require_db_write_enabled()
 
     def run_calculation():
         try:
@@ -449,6 +468,7 @@ async def refresh_index():
     logger.info("刷新指数数据")
 
     try:
+        require_db_write_enabled()
         result_df = run_index_pipeline(save_chart=True)
 
         return {
@@ -462,6 +482,8 @@ async def refresh_index():
                 }
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"刷新指数失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))

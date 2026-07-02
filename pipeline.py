@@ -58,30 +58,8 @@ def prepare_result_df(index_df, aggregated_df):
     return result_df.sort_values(['date', 'category_id'])
 
 
-def write_results(result_df, output_path):
-    """将结果写入 CSV 和 ClickHouse"""
-    if result_df.empty:
-        raise ValueError("无结果可写入")
-
-    ensure_result_table()
-
-    min_date = result_df['date'].min().strftime('%Y-%m-%d')
-    max_date = result_df['date'].max().strftime('%Y-%m-%d')
-    execute(f"""
-        ALTER TABLE {TABLE_PRICE_INDEX_RESULTS}
-        DELETE WHERE date BETWEEN toDate('{min_date}') AND toDate('{max_date}')
-    """, settings={'mutations_sync': 1})
-
-    insert_df(TABLE_PRICE_INDEX_RESULTS, result_df)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    result_df.to_csv(output_path, index=False)
-    logger.info(f"结果已写入 ClickHouse 表: {TABLE_PRICE_INDEX_RESULTS}")
-    logger.info(f"结果已保存: {output_path}")
-
-
-def run_index_pipeline(save_chart=True):
-    """运行完整价格指数计算流水线"""
+def calculate_index_result():
+    """只读计算价格指数结果"""
     started_at = time.perf_counter()
     cleaner = DataCleaner(settings.anomaly_params)
     calculator = IndexCalculator(settings.base_date)
@@ -97,17 +75,57 @@ def run_index_pipeline(save_chart=True):
     aggregated_df = calculator.compute_aggregated_index(index_df, level='global')
     result_df = prepare_result_df(index_df, aggregated_df)
     logger.info(f"结果生成完成: {len(result_df)} 条")
+    logger.info(f"只读计算耗时: {time.perf_counter() - started_at:.2f} 秒")
+    return result_df
+
+
+def save_index_files(result_df, save_chart=True):
+    """保存价格指数结果到本地 CSV 和趋势图"""
+    if result_df.empty:
+        raise ValueError("无结果可保存")
 
     output_path = os.path.join(settings.data_dir, 'price_index_results.csv')
-    write_results(result_df, output_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    result_df.to_csv(output_path, index=False)
+    logger.info(f"结果已保存: {output_path}")
 
     if save_chart:
+        chart_path = os.path.join(settings.data_dir, 'price_index_trend.png')
         Visualizer().plot_price_index(
             result_df,
             title=f"高频电商价格指数趋势图 (基期: {settings.base_date})",
-            save_path=os.path.join(settings.data_dir, 'price_index_trend.png'),
+            save_path=chart_path,
             show=False
         )
+    return result_df
 
+
+def persist_index_result(result_df):
+    """持久化价格指数结果到 ClickHouse"""
+    if not settings.safety.db_write_enabled:
+        raise PermissionError("当前配置为只读模式，禁止写入指数结果。")
+    if result_df.empty:
+        raise ValueError("无结果可写入")
+
+    ensure_result_table()
+
+    min_date = result_df['date'].min().strftime('%Y-%m-%d')
+    max_date = result_df['date'].max().strftime('%Y-%m-%d')
+    execute(f"""
+        ALTER TABLE {TABLE_PRICE_INDEX_RESULTS}
+        DELETE WHERE date BETWEEN toDate('{min_date}') AND toDate('{max_date}')
+    """, settings={'mutations_sync': 1})
+
+    insert_df(TABLE_PRICE_INDEX_RESULTS, result_df)
+    logger.info(f"结果已写入 ClickHouse 表: {TABLE_PRICE_INDEX_RESULTS}")
+    return result_df
+
+
+def run_index_pipeline(save_chart=True):
+    """计算并持久化价格指数结果"""
+    started_at = time.perf_counter()
+    result_df = calculate_index_result()
+    save_index_files(result_df, save_chart=save_chart)
+    persist_index_result(result_df)
     logger.info(f"流水线总耗时: {time.perf_counter() - started_at:.2f} 秒")
     return result_df

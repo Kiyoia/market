@@ -9,8 +9,9 @@ from typing import Tuple
 
 logger = logging.getLogger(__name__)
 
+from config import settings
 from db import (
-    get_client, execute, insert_df,
+    execute, insert_df,
     TABLE_CATEGORIES, TABLE_PRODUCTS, TABLE_DAILY_PRICES
 )
 
@@ -131,6 +132,9 @@ class DataLoader:
 
     def _upload_to_clickhouse(self, categories_df, products_df, daily_df):
         """上传数据到ClickHouse"""
+        if not settings.safety.db_write_enabled:
+            raise PermissionError("当前配置为只读模式，禁止向 ClickHouse 上传数据。")
+
         logger.info("上传数据到ClickHouse...")
 
         if self.force_reload:
@@ -145,12 +149,16 @@ class DataLoader:
 
     def _create_tables(self):
         """创建ClickHouse表"""
-        client = get_client()
-        client.execute(f"DROP TABLE IF EXISTS {TABLE_CATEGORIES}")
-        client.execute(f"DROP TABLE IF EXISTS {TABLE_PRODUCTS}")
-        client.execute(f"DROP TABLE IF EXISTS {TABLE_DAILY_PRICES}")
+        if not settings.safety.db_write_enabled:
+            raise PermissionError("当前配置为只读模式，禁止重建 ClickHouse 表。")
+        if not settings.safety.schema_reset_enabled:
+            raise PermissionError("当前配置禁止重建表，不能使用 force_reload=True。")
 
-        client.execute(f"""
+        execute(f"DROP TABLE IF EXISTS {TABLE_CATEGORIES}")
+        execute(f"DROP TABLE IF EXISTS {TABLE_PRODUCTS}")
+        execute(f"DROP TABLE IF EXISTS {TABLE_DAILY_PRICES}")
+
+        execute(f"""
             CREATE TABLE {TABLE_CATEGORIES} (
                 category String,
                 category_id UInt64,
@@ -162,7 +170,7 @@ class DataLoader:
             ORDER BY category_id
         """)
 
-        client.execute(f"""
+        execute(f"""
             CREATE TABLE {TABLE_PRODUCTS} (
                 product_id UInt64,
                 category_id UInt64,
@@ -174,7 +182,7 @@ class DataLoader:
             ORDER BY product_id
         """)
 
-        client.execute(f"""
+        execute(f"""
             CREATE TABLE {TABLE_DAILY_PRICES} (
                 product_id UInt64,
                 category_id UInt64,

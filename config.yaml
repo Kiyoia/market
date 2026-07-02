@@ -1,0 +1,24 @@
+clickhouse:
+  host: "cc-bp1n5v8x78h066754-ck-l3.clickhouseserver.rds.aliyuncs.com"
+  port: 9000
+  database: "default"
+  user: "user1"
+  password: "zH*$FRoEvGT$Vn36"
+
+data_dir: "./data"
+base_date: "2025-05-17"
+
+anomaly_params:
+  std_threshold: 3
+  price_high_ratio: 5
+  price_low_ratio: 0.2
+  historical_window: 30
+  min_category_count: 10
+
+log:
+  level: "INFO"
+  format: "%(asctime)s - %(levelname)s - %(message)s"
+
+server:
+  host: "127.0.0.1"
+  port: 8000

@@ -22,3 +22,7 @@ log:
 server:
   host: "127.0.0.1"
   port: 8000
+
+safety:
+  db_write_enabled: false
+  schema_reset_enabled: false

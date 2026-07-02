@@ -28,18 +28,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_pipeline() -> int:
-    """执行价格指数计算流程"""
-    from pipeline import run_index_pipeline
+    """执行价格指数计算并输出本地文件"""
+    from pipeline import calculate_index_result, save_index_files
 
     logger.info("=" * 60)
     logger.info("高频电商价格指数计算平台")
     logger.info("=" * 60)
 
     try:
-        result_df = run_index_pipeline(save_chart=True)
+        result_df = calculate_index_result()
+        save_index_files(result_df, save_chart=True)
 
         logger.info("=" * 60)
-        logger.info("计算完成!")
+        logger.info("计算完成，已输出本地 CSV 和趋势图，未写入 ClickHouse。")
         logger.info(f"  日期范围: {result_df['date'].min()} 至 {result_df['date'].max()}")
         logger.info(f"  分类数: {result_df['category_id'].nunique()}")
         logger.info(f"  总记录: {len(result_df)}")

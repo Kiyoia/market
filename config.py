@@ -68,6 +68,14 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class SafetyConfig:
+    """安全开关配置"""
+
+    db_write_enabled: bool = False
+    schema_reset_enabled: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """应用配置"""
 
@@ -77,6 +85,7 @@ class AppConfig:
     anomaly_params: AnomalyParams = field(default_factory=AnomalyParams)
     log: LogConfig = field(default_factory=LogConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
 
 
 def _runtime_dir() -> Path:
@@ -119,6 +128,7 @@ def load_config() -> AppConfig:
     anomaly_params = data.get("anomaly_params") or {}
     log = data.get("log") or {}
     server = data.get("server") or {}
+    safety = data.get("safety") or {}
 
     return AppConfig(
         clickhouse=ClickHouseConfig(
@@ -147,6 +157,10 @@ def load_config() -> AppConfig:
         server=ServerConfig(
             host=str(server.get("host", "127.0.0.1") or "127.0.0.1"),
             port=int(server.get("port", 8000) or 8000),
+        ),
+        safety=SafetyConfig(
+            db_write_enabled=bool(safety.get("db_write_enabled", False)),
+            schema_reset_enabled=bool(safety.get("schema_reset_enabled", False)),
         ),
     )
 
